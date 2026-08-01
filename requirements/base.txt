@@ -1,0 +1,56 @@
+# Third-party runtime dependencies for the Python side of the platform.
+#
+# These pins are the single source of truth used by `make install`, the API and
+# worker container images, and CI. The per-package `pyproject.toml` files declare
+# the same pins so that each distribution remains independently installable.
+#
+# Regenerate the fully-resolved lock with:  make lock
+
+# --- web layer -------------------------------------------------------------
+fastapi==0.141.1
+uvicorn[standard]==0.52.0
+python-multipart==0.0.32
+sse-starlette==3.4.6
+
+# --- validation / serialisation -------------------------------------------
+pydantic==2.13.4
+pydantic-settings==2.14.2
+email-validator==2.3.0
+orjson==3.11.9
+
+# --- relational storage ----------------------------------------------------
+SQLAlchemy==2.0.51
+alembic==1.18.5
+asyncpg==0.31.0
+aiosqlite==0.22.1
+greenlet==3.5.4
+
+# --- analytics storage -----------------------------------------------------
+clickhouse-connect==1.6.0
+
+# --- cache / rate limiting / locks ----------------------------------------
+redis==8.1.0
+
+# --- durable event bus -----------------------------------------------------
+aiokafka==0.14.0
+
+# --- object storage --------------------------------------------------------
+aioboto3==15.5.0
+
+# --- observability of the platform itself ---------------------------------
+structlog==26.1.0
+prometheus-client==0.26.0
+opentelemetry-api==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-proto==1.44.0
+
+# --- auth ------------------------------------------------------------------
+PyJWT[crypto]==2.13.0
+argon2-cffi==25.1.0
+
+# --- misc ------------------------------------------------------------------
+httpx==0.28.1
+Jinja2==3.1.6
+tenacity==9.1.4
+typing-extensions>=4.12
