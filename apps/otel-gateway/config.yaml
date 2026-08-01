@@ -1,0 +1,89 @@
+# OpenTelemetry Collector gateway.
+#
+# Optional. Applications can send OTLP straight to the platform's /v1/traces
+# endpoint; this gateway exists for deployments that already run a collector, or
+# that want the collector's batching, retry and tail-sampling in front of the
+# platform.
+#
+# It is also the recommended place to enforce organisation-wide redaction
+# policy, because it sits between the applications and the platform and is
+# operated by the platform team rather than by each application team.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 16
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Batching is what turns thousands of tiny exports into a few large ones.
+  batch:
+    timeout: 2s
+    send_batch_size: 512
+    send_batch_max_size: 2048
+
+  # A collector that grows without bound during a downstream outage will be
+  # OOM-killed and lose everything it was holding. The limiter sheds load
+  # instead, which is a bounded, visible failure.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # Strip credentials before they ever reach storage. Duplicated in the SDK and
+  # in the platform's ingestion path; this is the layer the platform team owns.
+  attributes/redact:
+    actions:
+      - key: http.request.header.authorization
+        action: delete
+      - key: http.request.header.cookie
+        action: delete
+      - key: url.query
+        action: delete
+      - key: aiobs.api_key
+        action: delete
+
+  resource/environment:
+    attributes:
+      - key: deployment.environment.name
+        value: ${env:DEPLOYMENT_ENVIRONMENT}
+        action: upsert
+
+exporters:
+  otlphttp/aiobs:
+    endpoint: ${env:AIOBS_ENDPOINT}
+    headers:
+      X-API-Key: ${env:AIOBS_API_KEY}
+    compression: gzip
+    timeout: 30s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 300s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 5000
+      # Survive a collector restart during a platform outage.
+      storage: file_storage
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  file_storage:
+    directory: /var/lib/otelcol/storage
+
+service:
+  extensions: [health_check, file_storage]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact, resource/environment, batch]
+      exporters: [otlphttp/aiobs]
+  telemetry:
+    logs:
+      level: warn
