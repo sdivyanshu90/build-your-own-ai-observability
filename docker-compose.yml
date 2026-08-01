@@ -1,0 +1,221 @@
+# Local development stack: `make dev`.
+#
+# Port choices are deliberately unusual (5xxxx) so the stack never collides with
+# a PostgreSQL, Redis or Kafka you already run. Change them in one place here.
+#
+# This file is for DEVELOPMENT. It runs stateful services as containers with
+# local volumes, which is exactly what you should not do in production -- see
+# docs/operations/deployment.md for the managed-service recommendations.
+
+name: aiobs
+
+x-api-environment: &api-environment
+  AIOBS_ENVIRONMENT: development
+  AIOBS_LOG_FORMAT: json
+  AIOBS_PUBLIC_URL: http://localhost:58000
+  AIOBS_WEB_URL: http://localhost:53000
+  AIOBS_DATABASE__URL: postgresql+asyncpg://aiobs:aiobs@postgres:5432/aiobs
+  AIOBS_ANALYTICS__DRIVER: clickhouse
+  AIOBS_ANALYTICS__URL: http://clickhouse:8123
+  AIOBS_ANALYTICS__DATABASE: aiobs
+  AIOBS_ANALYTICS__USERNAME: aiobs
+  AIOBS_ANALYTICS__PASSWORD: aiobs
+  AIOBS_KV__DRIVER: redis
+  AIOBS_KV__URL: redis://redis:6379/0
+  AIOBS_BUS__DRIVER: kafka
+  AIOBS_BUS__BROKERS: redpanda:9092
+  AIOBS_OBJECTS__DRIVER: s3
+  AIOBS_OBJECTS__ENDPOINT_URL: http://minio:9000
+  AIOBS_OBJECTS__BUCKET: aiobs-payloads
+  AIOBS_OBJECTS__ACCESS_KEY_ID: aiobsminio
+  AIOBS_OBJECTS__SECRET_ACCESS_KEY: aiobsminio-secret
+  AIOBS_AUTH__JWT_SECRET: development-only-secret-do-not-use-in-production-0001
+  AIOBS_SECURITY__COOKIE_SECURE: "false"
+  AIOBS_SECURITY__CORS_ALLOW_ORIGINS: '["http://localhost:53000"]'
+
+services:
+  # -------------------------------------------------------------------------
+  # stateful dependencies
+  # -------------------------------------------------------------------------
+
+  postgres:
+    image: postgres:17.7-alpine
+    environment:
+      POSTGRES_USER: aiobs
+      POSTGRES_PASSWORD: aiobs
+      POSTGRES_DB: aiobs
+      # Checksums catch silent corruption. Cheap, and off by default.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports: ["55432:5432"]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiobs -d aiobs"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3-alpine
+    environment:
+      CLICKHOUSE_USER: aiobs
+      CLICKHOUSE_PASSWORD: aiobs
+      CLICKHOUSE_DB: aiobs
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "58123:8123"   # HTTP
+      - "59009:9000"   # native
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./database/clickhouse/config:/etc/clickhouse-server/config.d:ro
+    ulimits:
+      # ClickHouse opens a lot of files; the container default is far too low.
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.0-alpine
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+      --appendonly no
+    ports: ["56379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redpanda:
+    image: redpandadata/redpanda:v25.1.9
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+      - --pandaproxy-addr=0.0.0.0:8082
+      - --advertise-pandaproxy-addr=redpanda:8082
+    ports:
+      - "59092:9092"
+      - "58082:8082"
+    volumes: ["redpanda-data:/var/lib/redpanda/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: aiobsminio
+      MINIO_ROOT_PASSWORD: aiobsminio-secret
+    ports:
+      - "59001:9000"   # S3 API
+      - "59002:9001"   # console
+    volumes: ["minio-data:/data"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.121.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./apps/otel-gateway/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "54317:4317"   # OTLP gRPC
+      - "54318:4318"   # OTLP HTTP
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # migrations -- run to completion before the API and worker start
+  # -------------------------------------------------------------------------
+
+  migrate:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.api
+    command: ["sh", "-c", "alembic -c database/postgres/alembic.ini upgrade head && aiobs-admin migrate-analytics"]
+    environment: *api-environment
+    depends_on:
+      postgres: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+    restart: "no"
+
+  # -------------------------------------------------------------------------
+  # application
+  # -------------------------------------------------------------------------
+
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.api
+    command: ["aiobs-api", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *api-environment
+    ports: ["58000:8000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/live', timeout=3).status==204 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.worker
+    command: ["aiobs-worker"]
+    environment: *api-environment
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      api: { condition: service_healthy }
+    # Scale with `docker compose up -d --scale worker=3`; consumers coordinate
+    # through the bus's consumer group.
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:58000
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: http://localhost:58000
+    ports: ["53000:3000"]
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  clickhouse-data:
+  redpanda-data:
+  minio-data:
