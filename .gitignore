@@ -1,0 +1,65 @@
+# Secrets -------------------------------------------------------------------
+# Never commit a real environment file. `.env.example` is the documented
+# template and is deliberately not ignored.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!**/*.key.example
+secrets/
+
+# Python --------------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Node ----------------------------------------------------------------------
+node_modules/
+dist/
+.next/
+out/
+*.tsbuildinfo
+.eslintcache
+playwright-report/
+test-results/
+blob-report/
+.playwright/
+
+# Compiled output that used to be emitted beside its source. `tsconfig.json`
+# now sets `outDir: dist`; these patterns stop a stale build from being picked
+# up by module resolution ahead of the TypeScript it was built from.
+packages/*/typescript/src/**/*.js
+packages/*/typescript/src/**/*.d.ts
+packages/typescript-sdk/src/**/*.js
+packages/typescript-sdk/src/**/*.d.ts
+
+# Local data ----------------------------------------------------------------
+# The default local stack writes here; everything in it is reproducible from
+# `make migrate && make bootstrap && make seed`.
+.aiobs/
+*.db
+*.db-shm
+*.db-wal
+tmp/
+.scratch/
+
+# Editors and OS ------------------------------------------------------------
+.idea/
+.vscode/
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+*.swp
