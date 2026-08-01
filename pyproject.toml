@@ -1,0 +1,180 @@
+# Repository-wide tooling configuration.
+#
+# The Python packages each have their own pyproject.toml declaring their
+# dependencies; this file configures the tools that run across all of them, so
+# ruff, mypy and pytest behave identically no matter which directory you invoke
+# them from.
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    ".venv", "node_modules", "database/postgres/versions", ".aiobs",
+    "apps/web", "dist", "build",
+]
+src = [
+    "apps/api/src", "apps/worker/src", "packages/python-sdk/src",
+    "packages/shared-schemas/python", "packages/provider-adapters/src",
+]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",      # pycodestyle
+    "F",           # pyflakes
+    "I",           # isort
+    "N",           # pep8-naming
+    "UP",          # pyupgrade
+    "B",           # bugbear
+    "C4",          # comprehensions
+    "DTZ",         # naive datetimes -- a real source of trace-timestamp bugs
+    "T20",         # print statements outside scripts
+    "SIM",         # simplify
+    "PTH",         # pathlib
+    "RUF",         # ruff-specific
+    "ASYNC",       # async antipatterns
+    "S",           # bandit security rules
+]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "B008",    # FastAPI's Depends() in defaults is the documented idiom
+    "S101",    # assert is how tests assert
+    "N818",    # our error names are deliberate
+    "SIM108",  # ternaries are not always clearer
+    "RUF012",  # ClassVar annotations on mutable class attrs add noise here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "T20", "DTZ", "ASYNC"]
+"scripts/**" = ["T20", "S603", "S607", "S110"]
+"demos/**" = ["T20", "S311"]           # demos print, and use seeded PRNGs
+"**/__init__.py" = ["F401"]            # re-exports are the point
+
+# CLI entry points print; that is their interface.
+"apps/api/src/aiobs_api/cli.py" = ["T20", "S110", "SIM105"]
+"apps/api/src/aiobs_api/__main__.py" = ["T20"]
+"apps/worker/src/aiobs_worker/main.py" = [
+    "T20",
+    "S108",       # the heartbeat path is a default, overridden by env; /tmp is
+                  # an emptyDir in the container
+    "ASYNC240",   # one small write every 15s, deliberately not worth an async
+                  # filesystem dependency
+]
+
+# The query builders. Identifiers come from a closed registry
+# (storage/analytics/schemas.py) and every value is a bound parameter -- see the
+# module docstrings. S608 cannot distinguish that from concatenating user input.
+"apps/api/src/aiobs_api/storage/analytics/sqlbase.py" = ["S608"]
+"apps/api/src/aiobs_api/storage/analytics/clickhouse_store.py" = ["S608", "S110"]
+"apps/api/src/aiobs_api/storage/analytics/sqlite_store.py" = ["S608"]
+
+# Attribute and error-code registries. S105 fires on constant *names* containing
+# TOKEN or PASSWORD; the values are attribute names, not credentials.
+"apps/api/src/aiobs_api/services/audit.py" = ["S105"]
+"apps/api/src/aiobs_api/http/schemas.py" = ["S105"]
+"packages/shared-schemas/python/aiobs_schemas/errors.py" = ["S105"]
+"packages/shared-schemas/python/aiobs_schemas/enums.py" = ["S105"]
+"packages/shared-schemas/python/aiobs_schemas/semconv.py" = ["S105"]
+"packages/python-sdk/src/aiobs/semconv.py" = ["S105"]
+
+# S105: _DUMMY_PASSWORD is the constant-time verification dummy.
+# SIM105: the suppressed exception is load-bearing and commented at the site.
+"apps/api/src/aiobs_api/services/auth.py" = ["S105", "SIM105"]
+
+# S311: jitter for retry backoff and head sampling. Neither is a security
+# decision, and a CSPRNG would be slower for no benefit.
+"apps/api/src/aiobs_api/storage/bus/protocol.py" = ["S311"]
+"apps/api/src/aiobs_api/demo_data.py" = ["S311"]
+"packages/python-sdk/src/aiobs/exporter.py" = ["S311", "S110"]
+"packages/python-sdk/src/aiobs/tracer.py" = ["S311"]
+
+# S112/S110: "a broken detector must not drop data" and "instrumentation must
+# never raise into the application". Both are commented at the site.
+"apps/api/src/aiobs_api/domain/redaction.py" = ["S112"]
+"packages/python-sdk/src/aiobs/redaction.py" = ["S112"]
+"packages/python-sdk/src/aiobs/context.py" = ["S112", "N801"]
+"apps/api/src/aiobs_api/storage/bus/kafka_bus.py" = ["S112"]
+
+# N801: TimeoutError_ is deliberately suffixed so it does not shadow the builtin.
+"apps/api/src/aiobs_api/core/errors.py" = ["N801"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["aiobs", "aiobs_api", "aiobs_worker", "aiobs_schemas", "aiobs_providers"]
+
+[tool.ruff.format]
+quote-style = "double"
+docstring-code-format = true
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unreachable = true
+warn_unused_ignores = false
+show_error_codes = true
+pretty = true
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = "apps/api/src:apps/worker/src:packages/python-sdk/src:packages/shared-schemas/python:packages/provider-adapters/src"
+exclude = ["database/postgres/versions/", "\\.venv/", "node_modules/"]
+
+# Third-party packages without bundled type information. Listing them
+# explicitly is better than a blanket ignore: a package that gains stubs
+# later shows up as an unused entry rather than silently staying untyped.
+[[tool.mypy.overrides]]
+module = [
+    "clickhouse_connect.*", "aiokafka.*", "aioboto3.*", "argon2.*",
+    "sse_starlette.*", "opentelemetry.*", "aiosqlite.*", "structlog.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*", "demos.*"]
+strict = false
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+# Strict markers and strict config: a typo in a marker name silently disabling
+# a whole class of tests is a failure mode worth eliminating.
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+    "--tb=short",
+    # importmode=importlib plus a rootdir on sys.path lets suites share
+    # helpers via `from tests.integration... import ...` without installing
+    # the test tree as a package.
+    "--import-mode=importlib",
+]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "slow: takes more than a second",
+    "integration: needs a real backing service",
+    "clickhouse: needs a ClickHouse server",
+    "postgres: needs a PostgreSQL server",
+    "e2e: needs the whole stack running",
+    "performance: a load or benchmark test",
+]
+filterwarnings = [
+    "error",
+    # Starlette's on_event API is deprecated but still the documented way to
+    # register a shutdown hook from a middleware installer.
+    "ignore::DeprecationWarning:starlette.*",
+    "ignore::DeprecationWarning:fastapi.*",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["aiobs_api", "aiobs", "aiobs_schemas", "aiobs_providers", "aiobs_worker"]
+omit = ["*/tests/*", "*/__main__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@abstractmethod",
+    "\\.\\.\\.",
+]
