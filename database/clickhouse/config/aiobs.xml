@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<!--
+  Development ClickHouse tuning.
+
+  The defaults assume a dedicated machine; inside a laptop container they will
+  try to use all available memory and be killed. These limits keep the
+  container inside about 1 GB, which is enough for the demo volumes and small
+  enough to run alongside PostgreSQL, Redpanda and MinIO.
+
+  Do NOT copy this into production: see docs/operations/scaling.md.
+-->
+<clickhouse>
+    <logger>
+        <level>warning</level>
+        <console>1</console>
+    </logger>
+
+    <!-- Bound total memory so the container is not OOM-killed. -->
+    <max_server_memory_usage_to_ram_ratio>0.6</max_server_memory_usage_to_ram_ratio>
+    <mark_cache_size>268435456</mark_cache_size>
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+
+    <profiles>
+        <default>
+            <!-- A single runaway query must not take the server down. -->
+            <max_memory_usage>1000000000</max_memory_usage>
+            <max_execution_time>60</max_execution_time>
+            <!-- Async inserts batch many small writes into fewer parts, which
+                 is what keeps merge pressure sane under high-rate ingestion. -->
+            <async_insert>1</async_insert>
+            <wait_for_async_insert>1</wait_for_async_insert>
+            <async_insert_max_data_size>10485760</async_insert_max_data_size>
+            <async_insert_busy_timeout_ms>1000</async_insert_busy_timeout_ms>
+        </default>
+    </profiles>
+
+    <merge_tree>
+        <!-- Fewer, larger parts: the ingestion path writes in batches already. -->
+        <parts_to_delay_insert>500</parts_to_delay_insert>
+        <parts_to_throw_insert>1000</parts_to_throw_insert>
+    </merge_tree>
+</clickhouse>
