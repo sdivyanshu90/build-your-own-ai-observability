@@ -1,0 +1,27 @@
+# Development, test and tooling dependencies.
+-r base.txt
+
+# --- test runner -----------------------------------------------------------
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+pytest-xdist==3.8.0
+hypothesis==6.164.0
+freezegun==1.5.5
+respx==0.23.1
+asgi-lifespan==2.1.0
+
+# --- integration tests against real disposable dependencies ---------------
+testcontainers==4.15.0
+
+# --- static analysis -------------------------------------------------------
+mypy==2.3.0
+ruff==0.16.1
+types-aioboto3==15.5.0
+
+# --- build -----------------------------------------------------------------
+hatchling==1.31.0
+pip-tools==7.5.1
+
+# --- load testing ----------------------------------------------------------
+locust==2.46.0
