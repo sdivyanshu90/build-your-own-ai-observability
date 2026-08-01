@@ -1,0 +1,30 @@
+{
+  "name": "aiobs-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI Observability and Tracing Platform",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "workspaces": [
+    "packages/shared-schemas/typescript",
+    "packages/typescript-sdk",
+    "packages/ui-components",
+    "apps/web"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,css}\" --ignore-path .gitignore",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,css}\" --ignore-path .gitignore"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.5",
+    "prettier": "3.5.3",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}
