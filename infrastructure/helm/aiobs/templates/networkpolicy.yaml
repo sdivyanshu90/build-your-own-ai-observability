@@ -1,0 +1,40 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aiobs.fullname" . }}
+  labels:
+    {{- include "aiobs.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "aiobs.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Only the ingress controller reaches the API and the web app.
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: TCP, port: {{ .Values.api.port }} }
+        - { protocol: TCP, port: {{ .Values.web.port }} }
+  egress:
+    # DNS, or nothing resolves.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # The platform's own dependencies, in-cluster.
+    - to:
+        - namespaceSelector: {}
+    {{- with .Values.networkPolicy.allowedEgressCIDRs }}
+    # Managed services outside the cluster. Deliberately an explicit list: a
+    # system holding prompts and completions should not have general internet
+    # egress, because that is how exfiltration becomes easy.
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+    {{- end }}
+{{- end }}
