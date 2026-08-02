@@ -1,0 +1,96 @@
+# API image.
+#
+# Multi-stage: the builder installs into a virtualenv, the runtime copies only
+# that virtualenv and the source. The result carries no compiler, no build
+# headers and no package index cache, which is both smaller and a materially
+# smaller attack surface than a single-stage build.
+#
+# Pinned by digest-less tag plus an explicit patch version: reproducible enough
+# to be reviewable, loose enough that a security patch does not require a code
+# change. Production deployments should pin digests -- see
+# docs/operations/deployment.md.
+
+# ---------------------------------------------------------------------------
+# builder
+# ---------------------------------------------------------------------------
+FROM python:3.12.10-slim-bookworm AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# build-essential is needed to compile argon2-cffi and asyncpg wheels on
+# architectures without prebuilt ones. It stays in the builder stage only.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Dependencies first: this layer is cached until requirements change, which is
+# the difference between a 5-second and a 3-minute rebuild.
+COPY requirements/ requirements/
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install -r requirements/base.txt
+
+COPY packages/shared-schemas/ packages/shared-schemas/
+COPY packages/provider-adapters/ packages/provider-adapters/
+COPY packages/python-sdk/ packages/python-sdk/
+COPY apps/api/ apps/api/
+COPY apps/worker/ apps/worker/
+
+RUN pip install --no-deps \
+      ./packages/shared-schemas \
+      ./packages/provider-adapters \
+      ./packages/python-sdk \
+      ./apps/api \
+      ./apps/worker
+
+# ---------------------------------------------------------------------------
+# runtime
+# ---------------------------------------------------------------------------
+FROM python:3.12.10-slim-bookworm AS runtime
+
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="aiobs-api" \
+      org.opencontainers.image.description="AI Observability Platform API" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.revision="${GIT_COMMIT}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH" \
+    AIOBS_GIT_COMMIT="${GIT_COMMIT}"
+
+# curl is used by the container healthcheck and by operators debugging inside
+# the container; nothing else is installed.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 aiobs \
+    && useradd --system --uid 10001 --gid aiobs --no-create-home aiobs
+
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+COPY --chown=aiobs:aiobs database/ database/
+COPY --chown=aiobs:aiobs apps/api/src/ apps/api/src/
+
+# Non-root by default. A container that runs as root is one container-escape
+# away from being a host compromise.
+USER 10001:10001
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=25s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8000/live || exit 1
+
+# Exec form so the process receives SIGTERM directly and can drain gracefully.
+ENTRYPOINT ["aiobs-api"]
+CMD ["--host", "0.0.0.0", "--port", "8000"]
