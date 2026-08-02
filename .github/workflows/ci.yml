@@ -1,0 +1,346 @@
+name: CI
+
+# The pipeline is ordered by how fast a failure comes back: lint and types
+# first, then the suites that need no services, then the ones that do. A broken
+# import should not wait behind a ClickHouse container starting.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
+  # Deterministic hashing and formatting across runners.
+  PYTHONHASHSEED: "0"
+  TZ: UTC
+
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/dev.txt
+          pip install -e packages/shared-schemas --no-deps
+          pip install -e packages/provider-adapters --no-deps
+          pip install -e packages/python-sdk --no-deps
+          pip install -e apps/api --no-deps
+          pip install -e apps/worker --no-deps
+      - name: Install Node dependencies
+        run: npm ci
+      - name: Ruff
+        run: ruff check apps packages tests scripts
+      - name: Ruff format check
+        run: ruff format --check apps packages tests scripts
+      - name: Prettier
+        run: npm run format:check
+      - name: Secret scan
+        # Fails the build if a credential-shaped string is committed.
+        run: python scripts/scan-secrets.py
+
+  typecheck:
+    name: Static types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/dev.txt
+          pip install -e packages/shared-schemas --no-deps
+          pip install -e packages/provider-adapters --no-deps
+          pip install -e packages/python-sdk --no-deps
+          pip install -e apps/api --no-deps
+          pip install -e apps/worker --no-deps
+      - run: npm ci
+      - name: mypy
+        run: mypy apps packages
+      - name: TypeScript
+        run: npm run typecheck --workspaces --if-present
+
+  python-tests:
+    name: Python suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/dev.txt
+          pip install -e packages/shared-schemas --no-deps
+          pip install -e packages/provider-adapters --no-deps
+          pip install -e packages/python-sdk --no-deps
+          pip install -e apps/api --no-deps
+          pip install -e apps/worker --no-deps
+      - name: Unit, contract, integration, security, chaos, migration
+        run: |
+          pytest tests --ignore=tests/performance -q \
+            --cov=aiobs_api --cov=aiobs --cov=aiobs_schemas --cov=aiobs_providers \
+            --cov-report=xml --cov-report=term-missing
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage
+          path: coverage.xml
+          if-no-files-found: warn
+
+  analytics-conformance:
+    name: Analytics conformance (ClickHouse)
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.3-alpine
+        ports: ["8123:8123"]
+        options: >-
+          --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/dev.txt
+          pip install -e packages/shared-schemas --no-deps
+          pip install -e apps/api --no-deps
+      - name: Run the suite against both drivers
+        # This is the job that stops SQLite and ClickHouse from diverging. It is
+        # separate so its container cost is only paid once, and so a failure
+        # here is unambiguous about which driver broke.
+        env:
+          AIOBS_TEST_CLICKHOUSE_URL: http://localhost:8123
+        run: pytest tests/integration/test_analytics_conformance.py -q
+
+  postgres-migrations:
+    name: Migrations (PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: aiobs
+          POSTGRES_USER: aiobs
+          POSTGRES_DB: aiobs
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/dev.txt
+          pip install -e packages/shared-schemas --no-deps
+          pip install -e apps/api --no-deps
+      - name: Upgrade, downgrade, upgrade again
+        # A migration that cannot be rolled back is a migration you cannot
+        # deploy on a Friday.
+        env:
+          AIOBS_DATABASE__URL: postgresql+asyncpg://aiobs:aiobs@localhost:5432/aiobs
+        run: |
+          python -m alembic -c database/postgres/alembic.ini upgrade head
+          python -m alembic -c database/postgres/alembic.ini downgrade base
+          python -m alembic -c database/postgres/alembic.ini upgrade head
+      - name: Fail if the models have drifted from the migrations
+        env:
+          AIOBS_DATABASE__URL: postgresql+asyncpg://aiobs:aiobs@localhost:5432/aiobs
+        run: python -m alembic -c database/postgres/alembic.ini check
+
+  node-tests:
+    name: TypeScript suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspaces --if-present
+      - run: npm test --workspaces --if-present
+
+  browser-tests:
+    name: Browser journeys
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/dev.txt
+          pip install -e packages/shared-schemas --no-deps
+          pip install -e packages/provider-adapters --no-deps
+          pip install -e packages/python-sdk --no-deps
+          pip install -e apps/api --no-deps
+          pip install -e apps/worker --no-deps
+      - run: npm ci
+      - run: npm run build --workspaces --if-present
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+        working-directory: apps/web
+      - name: Start the platform and seed it
+        # The browser suite runs against a real API, not mocks: the failures
+        # worth catching here only happen when both halves are present.
+        env:
+          AIOBS_DATABASE__URL: sqlite+aiosqlite:///./.aiobs/metadata.db
+          AIOBS_ANALYTICS__SQLITE_PATH: ./.aiobs/analytics.db
+          AIOBS_OBJECTS__ROOT_PATH: ./.aiobs/objects
+        run: |
+          mkdir -p .aiobs
+          python -m alembic -c database/postgres/alembic.ini upgrade head
+          aiobs-admin bootstrap > bootstrap.txt
+          PROJECT=$(grep -oE 'prj_[A-Za-z0-9]+' bootstrap.txt | head -1)
+          aiobs-admin seed-demo --project-id "$PROJECT" --traces 60
+          aiobs-api --port 58000 &
+          aiobs-worker &
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:58000/health >/dev/null && break
+            sleep 1
+          done
+      - name: Playwright
+        env:
+          AIOBS_E2E_ENVIRONMENT: development
+        run: npm run test:e2e --workspace @aiobs/web
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report
+          if-no-files-found: ignore
+
+  smoke:
+    name: End-to-end smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/dev.txt
+          pip install -e packages/shared-schemas --no-deps
+          pip install -e packages/provider-adapters --no-deps
+          pip install -e packages/python-sdk --no-deps
+          pip install -e apps/api --no-deps
+          pip install -e apps/worker --no-deps
+      - name: Start the platform
+        env:
+          AIOBS_DATABASE__URL: sqlite+aiosqlite:///./.aiobs/metadata.db
+          AIOBS_ANALYTICS__SQLITE_PATH: ./.aiobs/analytics.db
+          AIOBS_OBJECTS__ROOT_PATH: ./.aiobs/objects
+        run: |
+          mkdir -p .aiobs
+          python -m alembic -c database/postgres/alembic.ini upgrade head
+          aiobs-admin bootstrap
+          aiobs-api --port 58000 &
+          aiobs-worker &
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:58000/health >/dev/null && break
+            sleep 1
+          done
+      - name: Smoke test
+        run: python scripts/smoke-test.py --api http://localhost:58000
+
+  images:
+    name: Container images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.api
+          push: false
+          load: true
+          tags: aiobs-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build the worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.worker
+          push: false
+          load: true
+          tags: aiobs-worker:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: The image must not run as root
+        run: |
+          user=$(docker run --rm --entrypoint id aiobs-api:ci -u)
+          test "$user" != "0" || { echo "image runs as root"; exit 1; }
+      - name: Configuration validation refuses a development-shaped production
+        # Catches the class of mistake that only shows up at 3am: shipping the
+        # SQLite analytics driver or an in-memory rate limiter to production.
+        run: |
+          set +e
+          # --entrypoint, because the image's entrypoint is the API server and
+          # trailing arguments would be passed to it rather than replacing it.
+          docker run --rm --entrypoint aiobs-admin \
+            -e AIOBS_ENVIRONMENT=production aiobs-api:ci check-config
+          test $? -ne 0 || { echo "check-config accepted an invalid production config"; exit 1; }
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Check links and referenced files
+        run: python scripts/check-docs.py
