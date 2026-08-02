@@ -1,0 +1,23 @@
+apiVersion: v2
+name: aiobs
+description: AI Observability and Tracing Platform
+type: application
+# The chart version tracks packaging changes; appVersion tracks the images.
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - observability
+  - tracing
+  - opentelemetry
+  - llm
+home: https://github.com/aiobs/ai-observability-platform
+sources:
+  - https://github.com/aiobs/ai-observability-platform
+maintainers:
+  - name: Platform team
+annotations:
+  # The chart deploys the platform only. PostgreSQL, ClickHouse, Redis, Kafka
+  # and object storage are expected to be managed services -- running stateful
+  # systems as chart subcharts is how people end up with an observability
+  # platform that loses its own data.
+  aiobs.io/requires: PostgreSQL 15+, ClickHouse 24+, Redis 7+, Kafka 3+, S3-compatible storage
