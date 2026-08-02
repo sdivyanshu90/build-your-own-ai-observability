@@ -1,0 +1,52 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "aiobs.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "aiobs.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrations
+  annotations:
+    # Before the rollout, not after: every migration in this repository is
+    # expand-only, so the *old* replicas keep working against the new schema
+    # while the new ones roll out. A migration that required the new code first
+    # would have to be split into two releases.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "aiobs.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrations
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "aiobs.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "aiobs.image" (dict "Values" .Values "Chart" .Chart "component" "api") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          # Relational schema first, then the analytics tables. The order
+          # matters: the analytics migration reads tenant ids from PostgreSQL.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              python -m alembic -c database/postgres/alembic.ini upgrade head
+              aiobs-admin migrate-analytics
+          env: {{- include "aiobs.env" . | nindent 12 }}
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 512Mi }
+          volumeMounts: {{- include "aiobs.writableVolumeMounts" . | nindent 12 }}
+      volumes: {{- include "aiobs.writableVolumes" . | nindent 8 }}
+{{- end }}
