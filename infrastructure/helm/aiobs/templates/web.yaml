@@ -1,0 +1,78 @@
+{{- if .Values.web.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "aiobs.fullname" . }}-web
+  labels:
+    {{- include "aiobs.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.web.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "aiobs.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        {{- include "aiobs.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+    spec:
+      serviceAccountName: {{ include "aiobs.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: web
+          image: {{ include "aiobs.image" (dict "Values" .Values "Chart" .Chart "component" "web") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.web.port }}
+          env:
+            # The browser calls the API directly, so this is the *public* URL,
+            # not the in-cluster service name. Baked at build time in the
+            # image; supplied here for the server-rendered fallback.
+            - name: NEXT_PUBLIC_API_URL
+              value: {{ default .Values.config.publicUrl .Values.web.apiUrl | quote }}
+            - name: PORT
+              value: {{ .Values.web.port | quote }}
+            - name: HOSTNAME
+              value: "0.0.0.0"
+          livenessProbe:
+            httpGet: { path: /login, port: http }
+            periodSeconds: 20
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet: { path: /login, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources: {{- toYaml .Values.web.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "aiobs.writableVolumeMounts" . | nindent 12 }}
+            - name: next-cache
+              mountPath: /app/.next/cache
+      volumes:
+        {{- include "aiobs.writableVolumes" . | nindent 8 }}
+        - name: next-cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "aiobs.fullname" . }}-web
+  labels:
+    {{- include "aiobs.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  selector:
+    {{- include "aiobs.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+{{- end }}
