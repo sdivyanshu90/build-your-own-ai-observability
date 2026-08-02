@@ -1,0 +1,20 @@
+{{- if and .Values.telemetry.metricsEnabled .Values.telemetry.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "aiobs.fullname" . }}
+  labels:
+    {{- include "aiobs.labels" . | nindent 4 }}
+    {{- with .Values.telemetry.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "aiobs.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.telemetry.serviceMonitor.interval }}
+{{- end }}
