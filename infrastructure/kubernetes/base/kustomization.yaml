@@ -1,0 +1,45 @@
+# Plain Kubernetes manifests, for clusters that do not use Helm.
+#
+# These are the same workloads the chart renders, with the values fixed. If you
+# are choosing: use the chart. This exists because "install Helm first" is a
+# real barrier in some environments, and a platform you cannot deploy is not a
+# platform.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: aiobs
+
+commonLabels:
+  app.kubernetes.io/part-of: aiobs
+  app.kubernetes.io/managed-by: kustomize
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - configmap.yaml
+  - api.yaml
+  - worker.yaml
+  - web.yaml
+  - migrations-job.yaml
+
+images:
+  - name: ghcr.io/aiobs/api
+    newTag: 0.1.0
+  - name: ghcr.io/aiobs/worker
+    newTag: 0.1.0
+  - name: ghcr.io/aiobs/web
+    newTag: 0.1.0
+
+# The Secret is deliberately absent. Create it out of band, or generate it from
+# a secret manager -- committing one to the same repository as the manifests
+# that reference it defeats the point of having a secret.
+#
+#   kubectl create secret generic aiobs \
+#     --namespace aiobs \
+#     --from-literal=database-url='postgresql+asyncpg://...' \
+#     --from-literal=jwt-secret="$(openssl rand -hex 32)" \
+#     --from-literal=api-key-pepper="$(openssl rand -hex 32)" \
+#     --from-literal=cursor-secret="$(openssl rand -hex 32)" \
+#     --from-literal=analytics-password='...' \
+#     --from-literal=objects-access-key-id='...' \
+#     --from-literal=objects-secret-access-key='...'
