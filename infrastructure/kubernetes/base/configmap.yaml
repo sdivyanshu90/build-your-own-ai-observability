@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aiobs-config
+  namespace: aiobs
+data:
+  # Non-secret configuration only. Anything that would be damaging to read is
+  # in the `aiobs` Secret, referenced by key from the deployments.
+  AIOBS_ENVIRONMENT: "production"
+  AIOBS_LOG_LEVEL: "info"
+  AIOBS_LOG_FORMAT: "json"
+  AIOBS_PUBLIC_URL: "https://observability.example.com"
+  AIOBS_WEB_URL: "https://observability.example.com"
+
+  AIOBS_ANALYTICS__DRIVER: "clickhouse"
+  AIOBS_ANALYTICS__URL: "http://clickhouse:8123"
+  AIOBS_ANALYTICS__DATABASE: "aiobs"
+
+  AIOBS_KV__DRIVER: "redis"
+  AIOBS_KV__URL: "redis://redis-master:6379/0"
+
+  AIOBS_BUS__DRIVER: "kafka"
+  AIOBS_BUS__BROKERS: "kafka-0.kafka:9092,kafka-1.kafka:9092"
+  AIOBS_BUS__TOPIC: "aiobs.spans"
+  AIOBS_BUS__CONSUMER_GROUP: "aiobs-worker"
+
+  AIOBS_OBJECTS__DRIVER: "s3"
+  AIOBS_OBJECTS__BUCKET: "aiobs-payloads"
+  AIOBS_OBJECTS__REGION: "eu-west-1"
+
+  AIOBS_INGEST__MAX_BATCH_SPANS: "2000"
+  AIOBS_INGEST__ALLOW_ANONYMOUS_INGEST: "false"
+  AIOBS_SECURITY__MAX_REQUEST_BYTES: "8388608"
+  # https only, and never a wildcard: startup validation rejects both.
+  AIOBS_SECURITY__CORS_ALLOW_ORIGINS: '["https://observability.example.com"]'
+  # How many proxies sit in front. Too high and a client can spoof its own
+  # address to evade rate limiting; too low and every request appears to come
+  # from the load balancer.
+  AIOBS_SECURITY__TRUSTED_PROXY_HOPS: "1"
