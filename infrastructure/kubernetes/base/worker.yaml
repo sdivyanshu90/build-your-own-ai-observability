@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aiobs-worker
+  namespace: aiobs
+  labels:
+    app.kubernetes.io/name: aiobs
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aiobs
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aiobs
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: aiobs
+      # Longer than the API's: a worker mid-batch should commit rather than
+      # have its lease expire and the batch redelivered on every deploy.
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: ghcr.io/aiobs/worker:0.1.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - configMapRef:
+                name: aiobs-config
+          env:
+            - name: AIOBS_DATABASE__URL
+              valueFrom: { secretKeyRef: { name: aiobs, key: database-url } }
+            - name: AIOBS_AUTH__JWT_SECRET
+              valueFrom: { secretKeyRef: { name: aiobs, key: jwt-secret } }
+            - name: AIOBS_AUTH__API_KEY_PEPPER
+              valueFrom: { secretKeyRef: { name: aiobs, key: api-key-pepper } }
+            - name: AIOBS_SECURITY__CURSOR_SECRET
+              valueFrom: { secretKeyRef: { name: aiobs, key: cursor-secret } }
+            - name: AIOBS_ANALYTICS__PASSWORD
+              valueFrom: { secretKeyRef: { name: aiobs, key: analytics-password } }
+            - name: AIOBS_OBJECTS__ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: aiobs, key: objects-access-key-id } }
+            - name: AIOBS_OBJECTS__SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: aiobs, key: objects-secret-access-key } }
+            - name: AIOBS_WORKER__HEARTBEAT_PATH
+              value: /tmp/aiobs-worker.heartbeat
+          livenessProbe:
+            # A worker serves no traffic, so there is nothing to probe over
+            # HTTP -- and "the process is alive" would miss the failure that
+            # matters, a consumer that is running but no longer consuming. The
+            # heartbeat file is refreshed by the supervisor loop.
+            exec:
+              command: ["aiobs-worker", "--health-check"]
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aiobs-worker
+  namespace: aiobs
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aiobs
+      app.kubernetes.io/component: worker
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: aiobs-worker
+  namespace: aiobs
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: aiobs-worker
+  minReplicas: 2
+  maxReplicas: 30
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+  behavior:
+    scaleUp:
+      # An idle worker costs almost nothing; consumer lag costs freshness on
+      # every dashboard, so scale up without hesitation and down slowly.
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 600
