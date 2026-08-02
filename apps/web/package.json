@@ -1,0 +1,35 @@
+{
+  "name": "@aiobs/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI Observability Platform web application",
+  "scripts": {
+    "dev": "next dev -p 53000",
+    "build": "next build",
+    "start": "next start -p 53000",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@aiobs/schemas": "0.1.0",
+    "@tanstack/react-query": "5.101.4",
+    "next": "16.2.12",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@testing-library/jest-dom": "6.6.3",
+    "@testing-library/react": "16.2.0",
+    "@testing-library/user-event": "14.6.1",
+    "@types/react": "19.0.10",
+    "@types/react-dom": "19.0.4",
+    "@vitejs/plugin-react": "4.3.4",
+    "jsdom": "26.0.0",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}
