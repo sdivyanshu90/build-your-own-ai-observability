@@ -1,0 +1,105 @@
+name: Security
+
+# Runs on every change and on a schedule. The schedule matters more than the
+# push trigger: most vulnerabilities appear in dependencies you have not touched
+# in months, so a build that only scans on change never finds them.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/dev.txt pip-audit
+      - name: pip-audit
+        run: pip-audit --strict --desc
+      - run: npm ci
+      - name: npm audit
+        # Production dependencies only: a dev-only advisory should not block a
+        # release, but it should still be visible in the log.
+        run: |
+          npm audit --omit=dev --audit-level=high
+          npm audit --audit-level=critical || echo "dev-only advisories above"
+
+  static-analysis:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/dev.txt
+      - name: Bandit rules via ruff
+        # The S ruleset is bandit's checks: subprocess use, weak hashes, asserts
+        # in production paths, hard-coded credentials.
+        run: ruff check --select S apps packages scripts
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: a secret removed in the latest commit is still a
+          # secret, and rotating it requires knowing it was ever there.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Scan the working tree
+        run: python scripts/scan-secrets.py
+      - name: Scan the history
+        run: python scripts/scan-secrets.py --history
+
+  sbom:
+    name: Software bill of materials
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/dev.txt cyclonedx-bom
+          npm ci
+      - name: Generate
+        run: |
+          cyclonedx-py environment --output-format json --outfile sbom-python.json
+          npm sbom --sbom-format cyclonedx > sbom-node.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            sbom-python.json
+            sbom-node.json
