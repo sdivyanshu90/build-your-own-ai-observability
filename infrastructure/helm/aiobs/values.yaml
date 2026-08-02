@@ -1,0 +1,219 @@
+# Default values for the AI Observability Platform.
+#
+# Two rules shape this file:
+#
+# 1. **No secret has a default.** Every credential is read from a Kubernetes
+#    Secret you create, or from an external secret manager. A chart that ships
+#    a working default password ships a working default password to production.
+# 2. **Nothing stateful is deployed.** PostgreSQL, ClickHouse, Redis, Kafka and
+#    object storage are yours to run or to buy. The chart deploys the API, the
+#    worker and the web application, and validates on startup that it can reach
+#    the rest.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  registry: ghcr.io
+  repository: aiobs
+  # Pin by digest in production: a mutable tag makes a rollback ambiguous.
+  tag: ""            # defaults to .Chart.AppVersion
+  digest: ""         # e.g. sha256:abc..., takes precedence over tag
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# ---------------------------------------------------------------------------
+# platform configuration
+# ---------------------------------------------------------------------------
+config:
+  environment: production
+  logLevel: info
+  logFormat: json
+  publicUrl: ""      # required, e.g. https://observability.example.com
+  webUrl: ""         # required, e.g. https://observability.example.com
+
+  analytics:
+    driver: clickhouse
+    url: ""          # http://clickhouse:8123
+    database: aiobs
+
+  kv:
+    driver: redis
+    url: ""          # redis://redis-master:6379/0
+
+  bus:
+    driver: kafka
+    brokers: ""      # kafka-0:9092,kafka-1:9092
+    topic: aiobs.spans
+    consumerGroup: aiobs-worker
+
+  objects:
+    driver: s3
+    bucket: ""
+    region: ""
+    endpointUrl: ""  # only for S3-compatible storage that is not AWS
+
+  ingest:
+    maxBatchSpans: 2000
+    maxRequestBytes: 8388608
+    allowAnonymous: false
+
+  retention:
+    rawSpanDays: 30
+    aggregateDays: 400
+    payloadDays: 14
+
+  security:
+    corsAllowOrigins: []   # required: your web origin(s), https only
+    trustedProxyHops: 1    # how many proxies sit in front; wrong values break rate limiting
+
+# Every value here names a key in an existing Secret. The chart never creates
+# one, so `helm get values` can be shared without leaking anything.
+secrets:
+  # Create with, for example:
+  #   kubectl create secret generic aiobs \
+  #     --from-literal=database-url='postgresql+asyncpg://...' \
+  #     --from-literal=jwt-secret="$(openssl rand -hex 32)" ...
+  existingSecret: aiobs
+  keys:
+    databaseUrl: database-url
+    jwtSecret: jwt-secret
+    apiKeyPepper: api-key-pepper
+    cursorSecret: cursor-secret
+    analyticsPassword: analytics-password
+    objectsAccessKeyId: objects-access-key-id
+    objectsSecretAccessKey: objects-secret-access-key
+    kvPassword: ""            # optional
+    busSaslPassword: ""       # optional
+
+# ---------------------------------------------------------------------------
+# workloads
+# ---------------------------------------------------------------------------
+api:
+  replicaCount: 3
+  port: 8000
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { memory: 1Gi }   # no CPU limit: throttling an API server adds latency for no benefit
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  # Long enough for in-flight requests to finish; the app stops accepting new
+  # ones as soon as it receives SIGTERM.
+  terminationGracePeriodSeconds: 45
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+
+worker:
+  replicaCount: 2
+  resources:
+    requests: { cpu: 500m, memory: 512Mi }
+    limits: { memory: 1Gi }
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 30
+    targetCPUUtilizationPercentage: 75
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  # Longer than the API: a worker mid-batch should finish and commit rather
+  # than have its lease expire and the batch redelivered.
+  terminationGracePeriodSeconds: 90
+  concurrency: 4
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+web:
+  enabled: true
+  replicaCount: 2
+  port: 3000
+  apiUrl: ""   # defaults to config.publicUrl
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+
+# ---------------------------------------------------------------------------
+# migrations
+# ---------------------------------------------------------------------------
+migrations:
+  # Runs as a pre-install/pre-upgrade hook. Every migration in this repository
+  # is expand-only, so an old replica keeps working while the new schema is in
+  # place -- that is what makes running this before the rollout safe.
+  enabled: true
+  backoffLimit: 3
+  activeDeadlineSeconds: 900
+
+# ---------------------------------------------------------------------------
+# networking
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: nginx
+  annotations:
+    # Ingest batches are large; the default 1m body limit rejects them.
+    nginx.ingress.kubernetes.io/proxy-body-size: 16m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+  hosts:
+    - host: observability.example.com
+      paths:
+        - path: /v1
+          pathType: Prefix
+          service: api
+        - path: /health
+          pathType: Prefix
+          service: api
+        - path: /
+          pathType: Prefix
+          service: web
+  tls: []
+
+networkPolicy:
+  # Default-deny egress with an explicit allowlist. An observability platform
+  # holds prompts and completions; it should not be able to reach the internet
+  # unless you said so.
+  enabled: false
+  allowedEgressCIDRs: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}   # e.g. eks.amazonaws.com/role-arn for IRSA
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile: { type: RuntimeDefault }
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: ["ALL"] }
+
+# ---------------------------------------------------------------------------
+# observability of the observability platform
+# ---------------------------------------------------------------------------
+telemetry:
+  # Export the platform's own traces somewhere *else*. Pointing it at itself
+  # creates a feedback loop that is at best useless and at worst an outage
+  # amplifier; startup validation rejects that configuration.
+  otlpEndpoint: ""
+  metricsEnabled: true
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+extraEnv: []
+extraLabels: {}
+extraAnnotations: {}
