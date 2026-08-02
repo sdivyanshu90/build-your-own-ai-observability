@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aiobs-sdk"
+version = "0.1.0"
+description = "Python SDK for the AI Observability Platform: tracing, prompt/model/dataset lineage, retrieval and agent instrumentation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "httpx==0.28.1",
+  "typing-extensions>=4.12",
+]
+
+[project.optional-dependencies]
+fastapi = ["fastapi>=0.115", "starlette>=0.40"]
+openai = ["openai>=1.60"]
+dev = [
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "hypothesis==6.164.0",
+  "mypy==2.3.0",
+  "ruff==0.16.1",
+  "fastapi==0.141.1",
+  "asgi-lifespan==2.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aiobs"]
