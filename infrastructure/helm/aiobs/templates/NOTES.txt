@@ -1,0 +1,57 @@
+{{ .Chart.Name }} {{ .Chart.AppVersion }} installed as release {{ .Release.Name }}.
+
+API      {{ include "aiobs.fullname" . }}-api.{{ .Release.Namespace }}.svc:80
+{{- if .Values.web.enabled }}
+Web      {{ include "aiobs.fullname" . }}-web.{{ .Release.Namespace }}.svc:80
+{{- end }}
+Public   {{ .Values.config.publicUrl }}
+
+Next steps
+----------
+
+1. Create the first organization, project and API key:
+
+     kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "aiobs.fullname" . }}-api -- \
+       aiobs-admin bootstrap --email you@example.com
+
+   The API key is printed once and stored only as a keyed hash. Copy it now.
+
+2. Confirm the platform can reach everything it needs:
+
+     kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "aiobs.fullname" . }}-api -- \
+       aiobs-admin check-dependencies
+
+3. Point an SDK at it:
+
+     export AIOBS_ENDPOINT={{ .Values.config.publicUrl }}
+     export AIOBS_API_KEY=<the key from step 1>
+
+{{- if not .Values.ingress.enabled }}
+
+Note: no Ingress was created. Reach the API with a port-forward while you
+decide how it should be exposed:
+
+     kubectl port-forward -n {{ .Release.Namespace }} \
+       svc/{{ include "aiobs.fullname" . }}-api 8000:80
+{{- end }}
+
+{{- if eq .Values.config.environment "production" }}
+
+Before taking production traffic, verify the configuration guards passed:
+
+     kubectl logs -n {{ .Release.Namespace }} deploy/{{ include "aiobs.fullname" . }}-api | grep config
+
+The API refuses to start in production with an in-memory rate limiter, the
+SQLite analytics driver, a filesystem object store, anonymous ingest, a
+wildcard CORS origin or a plaintext credentialed origin.
+{{- end }}
+
+{{- if .Values.networkPolicy.enabled }}
+
+Network policy is on. Egress is restricted to the cluster plus:
+{{- range .Values.networkPolicy.allowedEgressCIDRs }}
+  - {{ . }}
+{{- end }}
+If a managed database or object store is outside those ranges, add its CIDR to
+networkPolicy.allowedEgressCIDRs or the platform cannot reach it.
+{{- end }}
